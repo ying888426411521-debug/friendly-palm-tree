@@ -3,7 +3,7 @@
 操作：
   左键单击      展开 / 收起详情（各网站延迟、ISP 等）
   左键拖动      移动窗口（位置会自动记住）
-  右键          菜单：立即刷新、回到右上角、修改配置、退出
+  右键          菜单：立即刷新、回到右上角、开机自启动、修改配置、退出
 """
 
 import os
@@ -14,7 +14,9 @@ import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+from tkinter import messagebox
 
+import autostart
 import monitor
 
 COLORS = {
@@ -76,6 +78,10 @@ class Widget:
     def __init__(self):
         enable_dpi_awareness()
         self.config = monitor.load_config()
+        try:
+            autostart.refresh()
+        except Exception:
+            pass
         self.opacity = min(1.0, max(0.2, float(self.config.get("opacity", 0.78))))
 
         self.root = tk.Tk()
@@ -126,6 +132,9 @@ class Widget:
         self.menu.add_command(label="立即刷新", command=self.refresh)
         self.menu.add_command(label="展开/收起详情", command=self.toggle_details)
         self.menu.add_command(label="回到右上角", command=self.reset_position)
+        self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
+        self.menu.add_checkbutton(label="开机自启动", variable=self.autostart_var,
+                                  command=self.toggle_autostart)
         self.menu.add_separator()
         self.menu.add_command(label="修改配置…", command=self.open_config)
         self.menu.add_command(label="退出", command=self.root.destroy)
@@ -255,6 +264,14 @@ class Widget:
     def refresh(self):
         self.dot.itemconfigure(self.dot_id, fill=COLORS[monitor.CHECKING])  # 蓝点表示检测中
         self.checker.refresh_now()
+
+    def toggle_autostart(self):
+        want = self.autostart_var.get()
+        try:
+            autostart.enable() if want else autostart.disable()
+        except Exception as e:
+            messagebox.showerror("NetWatch", f"设置开机自启动失败：{e}")
+        self.autostart_var.set(autostart.is_enabled())
 
     def open_config(self):
         path = monitor.CONFIG_PATH

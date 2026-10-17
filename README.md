@@ -43,11 +43,17 @@
 | 左键单击 | 展开 / 收起详情（每个网站的延迟、ISP、更新时间） |
 | 左键拖动 | 移动窗口，位置自动记住 |
 | 鼠标悬停 | 暂时变为不透明，方便看清 |
-| 右键 | 菜单：立即刷新 / 回到右上角 / 修改配置 / 退出 |
+| 右键 | 菜单：立即刷新 / 回到右上角 / 开机自启动 / 修改配置 / 退出 |
 
-### 开机自启（Windows）
+### 开机自启动
 
-按 `Win + R` 输入 `shell:startup` 回车，把 `run_windows.bat` 的**快捷方式**放进打开的文件夹即可。
+右键 → 勾选「**开机自启动**」即可，再点一次取消。只对当前用户生效，不需要管理员权限：
+
+- Windows：写入注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（也可以在「任务管理器 → 启动应用」里看到/关闭）
+- macOS：`~/Library/LaunchAgents/com.netwatch.plist`
+- Linux：`~/.config/autostart/netwatch.desktop`
+
+开启后如果把 exe 挪到了别的文件夹，下次手动打开一次，启动项会自动更新为新位置。
 
 ### 打包成 exe（可选）
 
@@ -95,3 +101,4 @@ python3 -m unittest discover -s tests   # 运行测试（检测逻辑，不需�
 
 - `monitor.py`：检测逻辑（IP 查询、网站检测、状态判断），不依赖界面
 - `netwatch.py`：tkinter 小窗界面
+- `autostart.py`：开机自启动（注册表 / LaunchAgent / autostart）
