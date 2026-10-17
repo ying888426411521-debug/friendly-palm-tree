@@ -20,7 +20,14 @@
 
 出口 IP 一旦变化（换节点、VPN 掉线），窗口会闪烁几秒，展开详情里能看到「IP 变化：美国 · 洛杉矶 → 日本 · 东京」。
 
-## 使用
+## 下载（Windows，免安装）
+
+到 GitHub 仓库的 **Releases → latest** 下载 `NetWatch.exe`，双击运行即可，不需要安装 Python。
+每次推送代码都会由 GitHub Actions 在 Windows 上自动重新打包（见 `.github/workflows/build-exe.yml`）。
+
+> 首次运行时 Windows 可能弹出「Windows 已保护你的电脑」（exe 没有数字签名），点「更多信息 → 仍要运行」即可。
+
+## 从源码运行
 
 需要 **Python 3.8+**（Windows / macOS 官方安装包自带 tkinter，无需安装其它依赖）。
 
