@@ -38,8 +38,12 @@ DEFAULT_CONFIG = {
     ],
     # 国内网站，用来区分“VPN 坏了”和“整个网络断了”。不需要可设为 null
     "domestic_target": {"name": "百度", "url": "https://www.baidu.com"},
-    # 窗口位置（拖动后自动保存）：[右边缘 x, 顶部 y]；null 表示屏幕右上角
-    "position": None,
+    # 配色："auto" 跟随 Windows 深浅色，也可以写 "dark" / "light"
+    "theme": "auto",
+    # 是否折叠成一个小圆点（点 ‹ › 切换，会自动记住）
+    "collapsed": False,
+    # 位置（拖动后自动保存）：[右边缘 x, 垂直中心 y]；null 表示停靠在任务栏托盘左边
+    "anchor": None,
 }
 
 

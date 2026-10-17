@@ -1,9 +1,14 @@
-"""NetWatch —— 屏幕右上角的半透明小窗，实时显示出口 IP 归属地和网络/VPN 是否正常。
+"""NetWatch —— 停靠在任务栏托盘旁边的小部件，实时显示出口 IP 归属地和网络/VPN 是否正常。
+
+  展开：‹ ● 新加坡        折叠：› ●
+          正常 448ms
+  圆点颜色：绿 = 正常，黄 = 部分网站不通/网速慢，红 = VPN 断开或网络断开
 
 操作：
-  左键单击      展开 / 收起详情（各网站延迟、ISP 等）
-  左键拖动      移动窗口（位置会自动记住）
-  右键          菜单：立即刷新、回到右上角、开机自启动、修改配置、退出
+  点 ‹ / ›      折叠 / 展开
+  单击圆点/文字  弹出详情（IP、各网站延迟、ISP 等），再点一次关闭
+  左键拖动      移动位置（会自动记住；拖到任务栏上会自动对齐）
+  右键          菜单：立即刷新、停靠到任务栏、开机自启动、修改配置、退出
 """
 
 import os
@@ -17,23 +22,24 @@ import tkinter.font as tkfont
 from tkinter import messagebox
 
 import autostart
+import desktop
 import monitor
 
 COLORS = {
-    monitor.OK: "#3ddc84",
-    monitor.WARN: "#ffb020",
-    monitor.BAD: "#ff4d4f",
-    monitor.OFFLINE: "#8c8c8c",
-    monitor.CHECKING: "#4aa8ff",
+    monitor.OK: "#22c55e",
+    monitor.WARN: "#f5a524",
+    monitor.BAD: "#ef4444",
+    monitor.OFFLINE: "#ef4444",
+    monitor.CHECKING: "#9ca3af",
 }
-BG = "#1b1d22"
-FG = "#e8e8e8"
-FG_DIM = "#9aa0a6"
-MARGIN = 12  # 距离屏幕边缘的像素
+THEMES = {
+    "dark": {"bg": "#202020", "hover": "#303030", "fg": "#ffffff", "dim": "#c4c4c4"},
+    "light": {"bg": "#eef1f5", "hover": "#e0e5eb", "fg": "#1b1b1b", "dim": "#5c6370"},
+}
 
 
 def enable_dpi_awareness():
-    # Windows 高分屏下避免字体发虚
+    # Windows 高分屏下避免字体发虚；坐标也会和任务栏位置一样使用物理像素
     if sys.platform == "win32":
         try:
             import ctypes
@@ -49,6 +55,14 @@ def pick_font(root, size, weight="normal"):
         if name in available:
             return tkfont.Font(root=root, family=name, size=size, weight=weight)
     return tkfont.Font(root=root, size=size, weight=weight)
+
+
+def full_place(ip):
+    parts = []
+    for p in (ip.country, ip.region, ip.city):
+        if p and p not in parts:
+            parts.append(p)
+    return " · ".join(parts) or "未知"
 
 
 class Checker(threading.Thread):
@@ -86,19 +100,26 @@ class Widget:
 
         self.root = tk.Tk()
         self.root.title("NetWatch")
-        self.root.overrideredirect(True)          # 无边框
-        self.root.attributes("-topmost", True)    # 置顶
+        self.root.overrideredirect(True)          # 无边框、不占任务栏按钮
+        self.root.attributes("-topmost", True)    # 置顶（盖在任务栏上面）
         self.root.attributes("-alpha", self.opacity)
-        self.root.configure(bg=BG)
+        self.scale = max(1.0, self.root.winfo_fpixels("1i") / 96)
 
-        self.font = pick_font(self.root, 10, "bold")
-        self.font_small = pick_font(self.root, 9)
+        self.font = pick_font(self.root, 9, "bold")
+        self.font_small = pick_font(self.root, 8)
+        self.font_icon = pick_font(self.root, 12)
 
-        self.expanded = False
+        self.collapsed = bool(self.config.get("collapsed"))
         self.snapshot = None
         self.last_ip = None
         self.change_note = ""
         self.flash_until = 0.0
+        self.hover = False
+        self.hidden = False
+        self.popup = None
+        self.ticks = 0
+        self.theme = self._pick_theme()
+        self.bar = self._horizontal_taskbar()
 
         self._build()
         self._place_initial()
@@ -108,30 +129,35 @@ class Widget:
         self.checker.start()
         self._poll()
 
+    def px(self, n):
+        return int(round(n * self.scale))
+
     # ------------------------------------------------------------ 界面
     def _build(self):
-        self.frame = tk.Frame(self.root, bg=BG, padx=10, pady=6,
-                              highlightthickness=1, highlightbackground="#33363d")
-        self.frame.pack(fill="both", expand=True)
+        self.body = tk.Frame(self.root)
+        self.body.pack(expand=True)  # 在窗口里垂直居中
 
-        top = tk.Frame(self.frame, bg=BG)
-        top.pack(fill="x")
-        self.dot = tk.Canvas(top, width=10, height=10, bg=BG, highlightthickness=0)
-        self.dot_id = self.dot.create_oval(1, 1, 9, 9, fill=COLORS[monitor.CHECKING], outline="")
-        self.dot.pack(side="left", padx=(0, 6))
-        self.place_label = tk.Label(top, text="检测中…", font=self.font, fg=FG, bg=BG, anchor="w")
-        self.place_label.pack(side="left")
+        self.toggle_btn = tk.Label(self.body, font=self.font_icon, cursor="hand2",
+                                   padx=self.px(5))
+        self.toggle_btn.pack(side="left")
 
-        self.status_label = tk.Label(self.frame, text="", font=self.font_small,
-                                     fg=FG_DIM, bg=BG, anchor="w", justify="left")
-        self.status_label.pack(fill="x", padx=(16, 0))
+        d = self.px(10)
+        self.dot = tk.Canvas(self.body, width=d, height=d, highlightthickness=0)
+        self.dot_id = self.dot.create_oval(1, 1, d - 1, d - 1, outline="")
+        self.dot.pack(side="left")
 
-        self.detail = tk.Frame(self.frame, bg=BG)
+        self.text = tk.Frame(self.body)
+        self.place_label = tk.Label(self.text, text="检测中…", font=self.font, anchor="w",
+                                    pady=0)
+        self.place_label.pack(fill="x")
+        self.status_label = tk.Label(self.text, font=self.font_small, anchor="w", pady=0)
+        self.status_label.pack(fill="x")
 
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="立即刷新", command=self.refresh)
-        self.menu.add_command(label="展开/收起详情", command=self.toggle_details)
-        self.menu.add_command(label="回到右上角", command=self.reset_position)
+        self.menu.add_command(label="显示详情", command=self.toggle_popup)
+        self.menu.add_command(label="折叠 / 展开", command=self.toggle_collapsed)
+        self.menu.add_command(label="停靠到任务栏", command=self.reset_position)
         self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
         self.menu.add_checkbutton(label="开机自启动", variable=self.autostart_var,
                                   command=self.toggle_autostart)
@@ -139,14 +165,9 @@ class Widget:
         self.menu.add_command(label="修改配置…", command=self.open_config)
         self.menu.add_command(label="退出", command=self.root.destroy)
 
-        self._bind_mouse(self.frame)
-        self.root.bind("<Enter>", lambda e: self.root.attributes("-alpha", 1.0))
+        self._bind_mouse(self.root)
+        self.root.bind("<Enter>", self._on_enter)
         self.root.bind("<Leave>", self._on_leave)
-
-    def _on_leave(self, e):
-        # 在子控件之间移动也会触发 Leave，只有真正移出窗口才恢复半透明
-        if self.root.winfo_containing(e.x_root, e.y_root) is None:
-            self.root.attributes("-alpha", self.opacity)
 
     def _bind_mouse(self, w):
         w.bind("<ButtonPress-1>", self._on_press)
@@ -155,114 +176,232 @@ class Widget:
         w.bind("<Button-3>", self._show_menu)
         w.bind("<Button-2>", self._show_menu)  # macOS 触控板右键
         for child in w.winfo_children():
-            self._bind_mouse(child)
+            if not isinstance(child, (tk.Menu, tk.Toplevel)):
+                self._bind_mouse(child)
+
+    def _on_enter(self, e):
+        self.hover = True
+        self.root.attributes("-alpha", 1.0)
+        self._apply_colors()
+
+    def _on_leave(self, e):
+        # 在子控件之间移动也会触发 Leave，只有真正移出窗口才恢复
+        if self.root.winfo_containing(e.x_root, e.y_root) is None:
+            self.hover = False
+            self.root.attributes("-alpha", self.opacity)
+            self._apply_colors()
+
+    def _pick_theme(self):
+        choice = self.config.get("theme", "auto")
+        if choice not in THEMES:
+            choice = "light" if desktop.is_light_theme() else "dark"
+        return THEMES[choice]
+
+    def _level(self):
+        return self.snapshot.level if self.snapshot else monitor.CHECKING
+
+    def _apply_colors(self):
+        t = self.theme
+        bg = t["hover"] if self.hover else t["bg"]
+        for w in (self.root, self.body, self.toggle_btn, self.dot, self.text,
+                  self.place_label, self.status_label):
+            w.configure(bg=bg)
+        self.toggle_btn.configure(fg=t["dim"])
+        self.place_label.configure(fg=t["fg"])
+        level = self._level()
+        self.status_label.configure(fg=t["dim"] if level == monitor.OK else COLORS[level])
+
+        color = COLORS[level]
+        if time.time() < self.flash_until and int(time.time() * 2) % 2:
+            color = bg  # IP 变化时圆点闪烁
+        self.dot.itemconfigure(self.dot_id, fill=color)
 
     def _render(self):
         snap = self.snapshot
-        level = snap.level if snap else monitor.CHECKING
-        flashing = time.time() < self.flash_until
-        color = COLORS[level]
-        if flashing and int(time.time() * 2) % 2:
-            color = "#ffffff"
-        self.dot.itemconfigure(self.dot_id, fill=color)
-        self.frame.configure(highlightbackground=COLORS[level] if flashing or level in
-                             (monitor.BAD, monitor.OFFLINE) else "#33363d")
-
         if snap is None:
             self.place_label.configure(text="检测中…")
-            self.status_label.configure(text="", fg=FG_DIM)
+            self.status_label.configure(text="")
         else:
-            ip = snap.ip
-            self.place_label.configure(text=ip.place if ip else "位置未知")
-            self.status_label.configure(
-                text=f"{ip.ip if ip else '—'}   {snap.summary}",
-                fg=FG_DIM if level == monitor.OK else COLORS[level])
+            self.place_label.configure(text=snap.ip.place if snap.ip else "位置未知")
+            self.status_label.configure(text=snap.summary)
 
-        if self.expanded and snap is not None:
-            self._fill_details(snap)
-            self.detail.pack(fill="x", padx=(16, 0), pady=(4, 0))
+        # 折叠时只剩箭头和圆点；箭头指向点击后窗口变化的方向
+        self.toggle_btn.configure(text="‹" if self.collapsed else "›")
+        if self.collapsed:
+            self.text.pack_forget()
+            self.dot.pack_configure(padx=(self.px(2), self.px(10)))
         else:
-            self.detail.pack_forget()
+            self.dot.pack_configure(padx=(self.px(2), self.px(7)))
+            self.text.pack(side="left", padx=(0, self.px(10)))
+        self._apply_colors()
         self._fit()
+        if self.popup:
+            self._fill_popup()
 
-    def _fill_details(self, snap):
-        for child in self.detail.winfo_children():
+    # ------------------------------------------------------------ 详情弹窗
+    def toggle_popup(self):
+        if self.popup:
+            self.popup.destroy()
+            self.popup = None
+            return
+        self.popup = tk.Toplevel(self.root)
+        self.popup.overrideredirect(True)
+        self.popup.attributes("-topmost", True)
+        self.popup.attributes("-alpha", max(self.opacity, 0.95))
+        self.popup_body = tk.Frame(self.popup, padx=self.px(14), pady=self.px(10))
+        self.popup_body.pack(fill="both", expand=True)
+        self._fill_popup()
+
+    def _fill_popup(self):
+        t = self.theme
+        self.popup.configure(bg=t["bg"])
+        self.popup_body.configure(bg=t["bg"])
+        for child in self.popup_body.winfo_children():
             child.destroy()
 
-        def cell(text, row, col, fg=FG_DIM, colspan=1):
-            tk.Label(self.detail, text=text, font=self.font_small, fg=fg, bg=BG,
-                     anchor="w").grid(row=row, column=col, columnspan=colspan,
-                                      sticky="w", padx=(0, 8))
+        def cell(text, row, col, fg=t["dim"], colspan=1, font=self.font_small, pady=0):
+            tk.Label(self.popup_body, text=text, font=font, fg=fg, bg=t["bg"], anchor="w",
+                     justify="left").grid(row=row, column=col, columnspan=colspan,
+                                          sticky="w", padx=(0, self.px(10)), pady=pady)
 
-        rows = list(snap.sites) + ([snap.domestic] if snap.domestic else [])
-        for i, s in enumerate(rows):
-            color = COLORS[monitor.OK] if s.ok else COLORS[monitor.BAD]
-            cell("✓" if s.ok else "✗", i, 0, color)
-            cell(s.name + ("（国内）" if s is snap.domestic else ""), i, 1)
-            cell(f"{s.latency_ms}ms" if s.ok else s.error, i, 2, FG if s.ok else color)
+        snap = self.snapshot
+        level = self._level()
+        row = 0
+        if snap is None:
+            cell("● 检测中…", row, 0, COLORS[level], 3, self.font)
+        else:
+            cell(f"● {snap.summary}", row, 0, COLORS[level], 3, self.font, (0, self.px(4)))
+            row += 1
+            ip = snap.ip
+            info = [("位置", full_place(ip) if ip else "未知"), ("IP", ip.ip if ip else "—")]
+            if ip and ip.isp:
+                info.append(("ISP", ip.isp))
+            for k, v in info:
+                cell(k, row, 0)
+                cell(v, row, 1, t["fg"], 2)
+                row += 1
 
-        extra = []
-        if snap.ip and snap.ip.isp:
-            extra.append(f"ISP: {snap.ip.isp}")
-        if self.change_note:
-            extra.append(self.change_note)
-        extra.append("更新于 " + time.strftime("%H:%M:%S", time.localtime(snap.checked_at))
-                     + (f" · {snap.ip.source}" if snap.ip else ""))
-        for j, text in enumerate(extra):
-            cell(text, len(rows) + j, 0, colspan=3)
-        self._bind_mouse(self.detail)
+            sites = list(snap.sites) + ([snap.domestic] if snap.domestic else [])
+            for i, s in enumerate(sites):
+                color = COLORS[monitor.OK] if s.ok else COLORS[monitor.BAD]
+                top = (self.px(6), 0) if i == 0 else 0
+                cell("✓" if s.ok else "✗", row, 0, color, pady=top)
+                cell(s.name + ("（国内）" if s is snap.domestic else ""), row, 1, pady=top)
+                cell(f"{s.latency_ms}ms" if s.ok else s.error, row, 2,
+                     t["fg"] if s.ok else color, pady=top)
+                row += 1
+
+            if self.change_note:
+                cell(self.change_note, row, 0, COLORS[monitor.WARN], 3, pady=(self.px(6), 0))
+                row += 1
+            updated = time.strftime("%H:%M:%S", time.localtime(snap.checked_at))
+            cell(f"更新于 {updated}" + (f" · {ip.source}" if ip else ""), row, 0,
+                 colspan=3, pady=(self.px(6), 0))
+        self._bind_popup(self.popup)
+        self._place_popup()
+
+    def _bind_popup(self, w):
+        w.bind("<ButtonRelease-1>", lambda e: self.toggle_popup())
+        w.bind("<Button-3>", self._show_menu)
+        for child in w.winfo_children():
+            self._bind_popup(child)
+
+    def _place_popup(self):
+        self.popup.update_idletasks()
+        pw, ph = self.popup.winfo_reqwidth(), self.popup.winfo_reqheight()
+        x, y, w, h = self.geom
+        sw = self.root.winfo_screenwidth()
+        px = min(max(0, x + w - pw), sw - pw)
+        gap = self.px(8)
+        py = y - ph - gap if y - ph - gap >= 0 else y + h + gap  # 默认弹在小部件上方
+        self.popup.geometry(f"+{px}+{py}")
 
     # ------------------------------------------------------------ 位置
+    def _horizontal_taskbar(self):
+        bar = desktop.taskbar_rect()
+        if bar and bar[2] - bar[0] > bar[3] - bar[1] > 0:
+            return bar
+        return None
+
+    def _dock_anchor(self):
+        """默认位置：任务栏托盘图标的左边；没有任务栏时放在屏幕右上角。"""
+        if self.bar:
+            tray = desktop.tray_rect()
+            right = tray[0] - self.px(4) if tray else self.bar[2] - self.px(320)
+            return right, (self.bar[1] + self.bar[3]) // 2
+        return self.root.winfo_screenwidth() - self.px(12), self.px(12) + self.px(20)
+
+    def _in_taskbar(self):
+        return bool(self.bar and self.bar[1] <= self.cy <= self.bar[3])
+
     def _place_initial(self):
-        pos = self.config.get("position")
+        anchor = self.config.get("anchor")
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        if isinstance(pos, list) and len(pos) == 2 and 0 < pos[0] <= sw and 0 <= pos[1] < sh:
-            self.right, self.top = int(pos[0]), int(pos[1])
+        if isinstance(anchor, list) and len(anchor) == 2 and 0 < anchor[0] <= sw \
+                and 0 <= anchor[1] < sh:
+            self.right, self.cy = int(anchor[0]), int(anchor[1])
         else:
-            self.right, self.top = sw - MARGIN, MARGIN
-        self._fit()
+            self.right, self.cy = self._dock_anchor()
+        self._render()
 
     def _fit(self):
-        # 窗口以右边缘为锚点：展开/内容变长时向左长，不会跑出屏幕
+        # 以右边缘为锚点：展开/折叠时向左伸缩，紧贴托盘的那一侧不动
         self.root.update_idletasks()
-        w = self.frame.winfo_reqwidth()
-        h = self.frame.winfo_reqheight()
-        self.root.geometry(f"{w}x{h}+{max(0, self.right - w)}+{self.top}")
+        w = self.body.winfo_reqwidth()
+        if self._in_taskbar():
+            h = max(self.px(24), self.bar[3] - self.bar[1] - self.px(8))
+        else:
+            h = self.px(40)
+        h = max(h, self.body.winfo_reqheight())
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        x = min(max(0, self.right - w), sw - w)
+        y = min(max(0, self.cy - h // 2), sh - h)
+        self.geom = (x, y, w, h)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def reset_position(self):
-        self.right, self.top = self.root.winfo_screenwidth() - MARGIN, MARGIN
-        self.config["position"] = None
+        self.bar = self._horizontal_taskbar()
+        self.right, self.cy = self._dock_anchor()
+        self.config["anchor"] = None
         monitor.save_config(self.config)
-        self._fit()
+        self._render()
 
     def _on_press(self, e):
-        self._press = (e.x_root, e.y_root, self.right, self.top)
+        self._press = (e.x_root, e.y_root, self.right, self.cy)
         self._moved = False
 
     def _on_drag(self, e):
-        x0, y0, r0, t0 = self._press
+        x0, y0, r0, c0 = self._press
         dx, dy = e.x_root - x0, e.y_root - y0
         if abs(dx) + abs(dy) > 3:
             self._moved = True
         if self._moved:
-            self.right, self.top = r0 + dx, max(0, t0 + dy)
+            self.right, self.cy = r0 + dx, c0 + dy
             self._fit()
+            if self.popup:
+                self._place_popup()
 
     def _on_release(self, e):
-        if self._moved:
-            self.config["position"] = [self.right, self.top]
-            monitor.save_config(self.config)
-        else:
-            self.toggle_details()
+        if not self._moved:
+            self.toggle_collapsed() if e.widget is self.toggle_btn else self.toggle_popup()
+            return
+        # 拖到任务栏附近就自动垂直居中对齐
+        if self.bar and self.bar[1] - self.px(20) <= self.cy <= self.bar[3] + self.px(20):
+            self.cy = (self.bar[1] + self.bar[3]) // 2
+        self.config["anchor"] = [self.right, self.cy]
+        monitor.save_config(self.config)
+        self._render()
 
     # ------------------------------------------------------------ 操作
-    def toggle_details(self):
-        self.expanded = not self.expanded
+    def toggle_collapsed(self):
+        self.collapsed = not self.collapsed
+        self.config["collapsed"] = self.collapsed
+        monitor.save_config(self.config)
         self._render()
 
     def refresh(self):
-        self.dot.itemconfigure(self.dot_id, fill=COLORS[monitor.CHECKING])  # 蓝点表示检测中
+        self.dot.itemconfigure(self.dot_id, fill=COLORS[monitor.CHECKING])  # 灰点表示检测中
         self.checker.refresh_now()
 
     def toggle_autostart(self):
@@ -290,7 +429,7 @@ class Widget:
     def _show_menu(self, e):
         self.menu.tk_popup(e.x_root, e.y_root)
 
-    # ------------------------------------------------------------ 结果处理
+    # ------------------------------------------------------------ 定时处理
     def _poll(self):
         try:
             while True:
@@ -298,14 +437,35 @@ class Widget:
         except queue.Empty:
             pass
         if time.time() < self.flash_until + 1:
-            self._render()
-        self.root.attributes("-topmost", True)
+            self._apply_colors()
+
+        self.ticks += 1
+        if self.ticks % 10 == 0:  # 每 5 秒：任务栏可能移动、系统可能切换深浅色
+            bar, theme = self._horizontal_taskbar(), self._pick_theme()
+            if bar != self.bar or theme is not self.theme:
+                self.bar, self.theme = bar, theme
+                self._render()
+
+        # 全屏看视频/玩游戏时隐藏，其余时间保持在任务栏之上
+        fullscreen = desktop.fullscreen_app_running()
+        if fullscreen and not self.hidden:
+            self.hidden = True
+            if self.popup:
+                self.toggle_popup()
+            self.root.withdraw()
+        elif not fullscreen and self.hidden:
+            self.hidden = False
+            self.root.deiconify()
+        if not self.hidden:
+            self.root.attributes("-topmost", True)
+            if self.popup:
+                self.popup.attributes("-topmost", True)
         self.root.after(500, self._poll)
 
     def _on_snapshot(self, snap):
         ip = snap.ip
         if ip and self.last_ip and ip.ip != self.last_ip.ip:
-            # IP 变了（换节点 / VPN 掉线回落到直连），闪烁提醒几秒
+            # IP 变了（换节点 / VPN 掉线回落到直连），圆点闪烁提醒几秒
             self.change_note = (f"IP 变化 {time.strftime('%H:%M')}: "
                                 f"{self.last_ip.place} → {ip.place}")
             self.flash_until = time.time() + 6
