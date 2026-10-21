@@ -27,17 +27,17 @@ jobs:
       - name: Build NetWatch.exe
         run: pyinstaller --noconsole --onefile --name NetWatch --icon icon.ico netwatch.py
 
-      - name: Smoke test (exe starts and stays running)
+      - name: Check the exe on Windows (runs, config location, taskbar embedding)
         shell: pwsh
-        run: |
-          $p = Start-Process dist\NetWatch.exe -PassThru
-          Start-Sleep -Seconds 10
-          if ($p.HasExited) { throw "NetWatch.exe exited early with code $($p.ExitCode)" }
-          if (-not (Test-Path dist\config.json)) { throw "config.json was not created next to the exe" }
-          Stop-Process -Id $p.Id -Force
-          Get-Process NetWatch -ErrorAction SilentlyContinue | Stop-Process -Force
-          Remove-Item dist\config.json
-          Get-Item dist\NetWatch.exe | Format-List Name, Length
+        run: ./ci/windows_check.ps1
+
+      - name: Upload taskbar screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taskbar-screenshots
+          path: ci-shots/
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
         with:
@@ -53,4 +53,4 @@ jobs:
           gh release create latest dist/NetWatch.exe \
             --target "$GITHUB_SHA" \
             --title "NetWatch (Windows)" \
-            --notes "自动构建自 ${GITHUB_SHA::7}。下载 NetWatch.exe 双击运行即可，配置文件 config.json 会生成在 exe 旁边。"
+            --notes "自动构建自 ${GITHUB_SHA::7}。下载 NetWatch.exe 双击运行即可，配置保存在 %APPDATA%\\NetWatch\\config.json。"

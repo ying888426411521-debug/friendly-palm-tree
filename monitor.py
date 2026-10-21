@@ -7,6 +7,7 @@
 
 import json
 import os
+import shutil
 import socket
 import sys
 import time
@@ -40,6 +41,8 @@ DEFAULT_CONFIG = {
     "domestic_target": {"name": "百度", "url": "https://www.baidu.com"},
     # 配色："auto" 跟随 Windows 深浅色，也可以写 "dark" / "light"
     "theme": "auto",
+    # 是否嵌入任务栏（Windows）。嵌入后点任务栏不会闪；关掉则是浮在任务栏上的置顶小窗
+    "embed_taskbar": True,
     # 是否折叠成一个小圆点（点 ‹ › 切换，会自动记住）
     "collapsed": False,
     # 位置（拖动后自动保存）：[右边缘 x, 垂直中心 y]；null 表示停靠在任务栏托盘左边
@@ -48,16 +51,42 @@ DEFAULT_CONFIG = {
 
 
 def app_dir() -> str:
-    """配置文件放在程序旁边（打包成 exe 后为 exe 所在目录）。"""
+    """程序所在目录（打包成 exe 后为 exe 所在目录）。"""
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
 
-CONFIG_PATH = os.path.join(app_dir(), "config.json")
+def config_dir() -> str:
+    """配置放在用户数据目录，而不是程序旁边（exe 放在桌面上时就不会在桌面多出文件）。"""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "NetWatch")
 
 
-def load_config(path: str = CONFIG_PATH) -> dict:
+CONFIG_PATH = os.path.join(config_dir(), "config.json")
+# 旧版本把配置写在程序旁边，启动时自动搬到新位置
+LEGACY_CONFIG_PATH = os.path.join(app_dir(), "config.json")
+
+
+def _migrate_legacy_config(path: str) -> None:
+    if os.path.exists(path) or not os.path.exists(LEGACY_CONFIG_PATH):
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.move(LEGACY_CONFIG_PATH, path)
+    except OSError:
+        pass
+
+
+def load_config(path: Optional[str] = None) -> dict:
+    if path is None:
+        path = CONFIG_PATH
+        _migrate_legacy_config(path)
     config = json.loads(json.dumps(DEFAULT_CONFIG))
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -71,8 +100,10 @@ def load_config(path: str = CONFIG_PATH) -> dict:
     return config
 
 
-def save_config(config: dict, path: str = CONFIG_PATH) -> None:
+def save_config(config: dict, path: Optional[str] = None) -> None:
+    path = path or CONFIG_PATH
     try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
     except OSError:

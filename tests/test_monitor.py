@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -105,6 +106,21 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(monitor.load_config(path)["interval_seconds"], 30)
             with open(path) as f:
                 self.assertEqual(f.read(), "{oops")
+
+    def test_moves_legacy_config_next_to_program(self):
+        with tempfile.TemporaryDirectory() as d:
+            legacy = os.path.join(d, "desktop", "config.json")
+            new = os.path.join(d, "appdata", "NetWatch", "config.json")
+            os.makedirs(os.path.dirname(legacy))
+            with open(legacy, "w", encoding="utf-8") as f:
+                json.dump({"interval_seconds": 12}, f)
+            with mock.patch.object(monitor, "LEGACY_CONFIG_PATH", legacy), \
+                    mock.patch.object(monitor, "CONFIG_PATH", new):
+                self.assertEqual(monitor.load_config()["interval_seconds"], 12)
+                monitor.save_config({"interval_seconds": 13})
+            self.assertFalse(os.path.exists(legacy))  # 旧位置（桌面）不再有文件
+            with open(new, encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["interval_seconds"], 13)
 
 
 if __name__ == "__main__":

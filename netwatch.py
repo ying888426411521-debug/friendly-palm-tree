@@ -1,4 +1,4 @@
-"""NetWatch —— 停靠在任务栏托盘旁边的小部件，实时显示出口 IP 归属地和网络/VPN 是否正常。
+"""NetWatch —— 嵌在任务栏托盘旁边的小部件，实时显示出口 IP 归属地和网络/VPN 是否正常。
 
   展开：‹ ● 新加坡        折叠：› ●
           正常 448ms
@@ -7,8 +7,8 @@
 操作：
   点 ‹ / ›      折叠 / 展开
   单击圆点/文字  弹出详情（IP、各网站延迟、ISP 等），再点一次关闭
-  左键拖动      移动位置（会自动记住；拖到任务栏上会自动对齐）
-  右键          菜单：立即刷新、停靠到任务栏、开机自启动、修改配置、退出
+  左键拖动      移动位置（会自动记住；嵌入任务栏时只能左右移动）
+  右键          菜单：立即刷新、停靠到任务栏、嵌入任务栏、开机自启动、修改配置、退出
 """
 
 import os
@@ -38,16 +38,6 @@ THEMES = {
 }
 
 
-def enable_dpi_awareness():
-    # Windows 高分屏下避免字体发虚；坐标也会和任务栏位置一样使用物理像素
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:
-            pass
-
-
 def pick_font(root, size, weight="normal"):
     available = set(tkfont.families(root))
     for name in ("Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
@@ -73,13 +63,16 @@ class Checker(threading.Thread):
         self.config = config
         self.results = results
         self.wake = threading.Event()
+        self.stopped = False
 
     def run(self):
-        while True:
+        while not self.stopped:
             try:
                 snap = monitor.run_check(self.config)
             except Exception as e:  # 不能让检测线程挂掉
                 snap = monitor.Snapshot(monitor.OFFLINE, f"检测出错: {e}")
+            if self.stopped:
+                break
             self.results.put(snap)
             self.wake.wait(max(5, float(self.config.get("interval_seconds", 30))))
             self.wake.clear()
@@ -87,10 +80,14 @@ class Checker(threading.Thread):
     def refresh_now(self):
         self.wake.set()
 
+    def stop(self):
+        self.stopped = True
+        self.wake.set()
+
 
 class Widget:
     def __init__(self):
-        enable_dpi_awareness()
+        desktop.enable_dpi_awareness()
         self.config = monitor.load_config()
         try:
             autostart.refresh()
@@ -118,11 +115,15 @@ class Widget:
         self.hidden = False
         self.popup = None
         self.ticks = 0
+        self.embedded = False   # 是否已嵌入任务栏（成为任务栏的子窗口）
+        self.taskbar = None
+        self.quitting = False
         self.theme = self._pick_theme()
         self.bar = self._horizontal_taskbar()
 
         self._build()
         self._place_initial()
+        self._try_embed()
 
         self.results = queue.Queue()
         self.checker = Checker(self.config, self.results)
@@ -158,12 +159,16 @@ class Widget:
         self.menu.add_command(label="显示详情", command=self.toggle_popup)
         self.menu.add_command(label="折叠 / 展开", command=self.toggle_collapsed)
         self.menu.add_command(label="停靠到任务栏", command=self.reset_position)
+        if desktop.IS_WINDOWS:
+            self.embed_var = tk.BooleanVar(value=bool(self.config.get("embed_taskbar", True)))
+            self.menu.add_checkbutton(label="嵌入任务栏", variable=self.embed_var,
+                                      command=self.toggle_embed)
         self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
         self.menu.add_checkbutton(label="开机自启动", variable=self.autostart_var,
                                   command=self.toggle_autostart)
         self.menu.add_separator()
         self.menu.add_command(label="修改配置…", command=self.open_config)
-        self.menu.add_command(label="退出", command=self.root.destroy)
+        self.menu.add_command(label="退出", command=self.quit)
 
         self._bind_mouse(self.root)
         self.root.bind("<Enter>", self._on_enter)
@@ -181,14 +186,16 @@ class Widget:
 
     def _on_enter(self, e):
         self.hover = True
-        self.root.attributes("-alpha", 1.0)
+        if not self.embedded:
+            self.root.attributes("-alpha", 1.0)
         self._apply_colors()
 
     def _on_leave(self, e):
         # 在子控件之间移动也会触发 Leave，只有真正移出窗口才恢复
         if self.root.winfo_containing(e.x_root, e.y_root) is None:
             self.hover = False
-            self.root.attributes("-alpha", self.opacity)
+            if not self.embedded:
+                self.root.attributes("-alpha", self.opacity)
             self._apply_colors()
 
     def _pick_theme(self):
@@ -206,6 +213,9 @@ class Widget:
         for w in (self.root, self.body, self.toggle_btn, self.dot, self.text,
                   self.place_label, self.status_label):
             w.configure(bg=bg)
+        if self.embedded:
+            # 背景色设为透明色：平时只有文字和圆点“画”在任务栏上，悬停时才出现高亮底色
+            self.root.attributes("-transparentcolor", t["bg"])
         self.toggle_btn.configure(fg=t["dim"])
         self.place_label.configure(fg=t["fg"])
         level = self._level()
@@ -331,6 +341,20 @@ class Widget:
             return right, (self.bar[1] + self.bar[3]) // 2
         return self.root.winfo_screenwidth() - self.px(12), self.px(12) + self.px(20)
 
+    def _try_embed(self):
+        if not (desktop.IS_WINDOWS and self.bar and self.config.get("embed_taskbar", True)):
+            return
+        self.root.attributes("-topmost", False)
+        self.root.update()
+        hwnd = int(self.root.wm_frame(), 16)
+        bar = desktop.embed_in_taskbar(hwnd)
+        if not bar:  # 嵌入失败就退回普通的置顶小窗
+            self.root.attributes("-topmost", True)
+            return
+        self.hwnd, self.taskbar, self.embedded = hwnd, bar, True
+        self.root.attributes("-alpha", 1.0)
+        self._render()
+
     def _in_taskbar(self):
         return bool(self.bar and self.bar[1] <= self.cy <= self.bar[3])
 
@@ -354,6 +378,15 @@ class Widget:
         else:
             h = self.px(40)
         h = max(h, self.body.winfo_reqheight())
+        if self.embedded:
+            # 嵌入后坐标是相对任务栏的；只能在任务栏范围内左右移动
+            left, top, right, bottom = self.bar
+            self.cy = (top + bottom) // 2
+            x = min(max(left, self.right - w), right - w)
+            y = self.cy - h // 2
+            self.geom = (x, y, w, h)
+            self.root.geometry(f"{w}x{h}+{x - left}+{y - top}")
+            return
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         x = min(max(0, self.right - w), sw - w)
         y = min(max(0, self.cy - h // 2), sh - h)
@@ -377,7 +410,7 @@ class Widget:
         if abs(dx) + abs(dy) > 3:
             self._moved = True
         if self._moved:
-            self.right, self.cy = r0 + dx, c0 + dy
+            self.right, self.cy = r0 + dx, c0 + (0 if self.embedded else dy)
             self._fit()
             if self.popup:
                 self._place_popup()
@@ -399,6 +432,15 @@ class Widget:
         self.config["collapsed"] = self.collapsed
         monitor.save_config(self.config)
         self._render()
+
+    def toggle_embed(self):
+        self.config["embed_taskbar"] = self.embed_var.get()
+        monitor.save_config(self.config)
+        self.root.destroy()  # main() 会按新设置重新创建窗口
+
+    def quit(self):
+        self.quitting = True
+        self.root.destroy()
 
     def refresh(self):
         self.dot.itemconfigure(self.dot_id, fill=COLORS[monitor.CHECKING])  # 灰点表示检测中
@@ -441,25 +483,35 @@ class Widget:
 
         self.ticks += 1
         if self.ticks % 10 == 0:  # 每 5 秒：任务栏可能移动、系统可能切换深浅色
+            if self.embedded and not desktop.is_window(self.taskbar):
+                self.root.destroy()  # 资源管理器重启、任务栏被重建了：交给 main() 重新嵌入
+                return
             bar, theme = self._horizontal_taskbar(), self._pick_theme()
+            if self.embedded and bar is None:  # 任务栏被拖到了屏幕侧边：重新创建（退回浮动模式）
+                self.root.destroy()
+                return
             if bar != self.bar or theme is not self.theme:
                 self.bar, self.theme = bar, theme
                 self._render()
+            if self.embedded:
+                desktop.bring_to_top(self.hwnd)
 
-        # 全屏看视频/玩游戏时隐藏，其余时间保持在任务栏之上
-        fullscreen = desktop.fullscreen_app_running()
-        if fullscreen and not self.hidden:
-            self.hidden = True
-            if self.popup:
-                self.toggle_popup()
-            self.root.withdraw()
-        elif not fullscreen and self.hidden:
-            self.hidden = False
-            self.root.deiconify()
-        if not self.hidden:
-            self.root.attributes("-topmost", True)
-            if self.popup:
-                self.popup.attributes("-topmost", True)
+        if not self.embedded:
+            # 浮动模式：全屏看视频/玩游戏时隐藏，其余时间保持在任务栏之上。
+            # （嵌入模式不需要：任务栏全屏时自己会隐藏，也不会盖住我们）
+            fullscreen = desktop.fullscreen_app_running()
+            if fullscreen and not self.hidden:
+                self.hidden = True
+                if self.popup:
+                    self.toggle_popup()
+                self.root.withdraw()
+            elif not fullscreen and self.hidden:
+                self.hidden = False
+                self.root.deiconify()
+            if not self.hidden:
+                self.root.attributes("-topmost", True)
+        if self.popup:
+            self.popup.attributes("-topmost", True)
         self.root.after(500, self._poll)
 
     def _on_snapshot(self, snap):
@@ -475,8 +527,28 @@ class Widget:
         self._render()
 
     def run(self):
-        self.root.mainloop()
+        try:
+            self.root.mainloop()
+        except tk.TclError:
+            pass
+        finally:
+            self.checker.stop()
+
+
+def main():
+    # 窗口被关掉但不是用户点了“退出”（切换嵌入模式、资源管理器重启导致任务栏重建）时，
+    # 等任务栏回来后重新创建窗口
+    while True:
+        widget = Widget()
+        widget.run()
+        if widget.quitting:
+            break
+        for _ in range(60):
+            if not desktop.IS_WINDOWS or desktop.taskbar_hwnd():
+                break
+            time.sleep(1)
+        time.sleep(1)
 
 
 if __name__ == "__main__":
-    Widget().run()
+    main()
