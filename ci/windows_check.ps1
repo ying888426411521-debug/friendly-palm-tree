@@ -21,6 +21,19 @@ public static class W {
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr e);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
+  public static List<IntPtr> VisibleTopLevelOf(uint[] pids) {
+    var found = new List<IntPtr>();
+    EnumWindows((h, l) => {
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      RECT r; GetWindowRect(h, out r);
+      if (Array.IndexOf(pids, pid) >= 0 && IsWindowVisible(h) && r.B - r.T > 60) found.Add(h);
+      return true;
+    }, IntPtr.Zero);
+    return found;
+  }
   public static List<IntPtr> ChildrenOf(IntPtr parent, uint[] pids) {
     var found = new List<IntPtr>();
     EnumChildWindows(parent, (h, l) => {
@@ -89,6 +102,50 @@ function Show-Pixels($label, $win) {
   $g.Dispose(); $bmp.Dispose()
 }
 
+function Click($x, $y) {
+  [void][W]::SetCursorPos($x, $y)
+  Start-Sleep -Milliseconds 100
+  [W]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
+  Start-Sleep -Milliseconds 60
+  [W]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+  [void][W]::SetCursorPos(5, 5)  # move away so hover highlight does not stick
+  Start-Sleep -Milliseconds 1500
+}
+
+function NetWatch-Pids { [uint32[]]@(Get-Process NetWatch | ForEach-Object { $_.Id }) }
+
+function Embedded-Window {
+  $bar = [W]::FindWindow("Shell_TrayWnd", $null)
+  $kids = [W]::ChildrenOf($bar, (NetWatch-Pids))
+  if ($kids.Count -ne 1) { throw "expected exactly one embedded window, found $($kids.Count)" }
+  return $kids[0]
+}
+
+# Clicks on the embedded widget must reach it (it lives inside explorer's taskbar window)
+function Test-Clicks {
+  $win = Embedded-Window
+  $r = Get-Rect $win; $mid = [int](($r.T + $r.B) / 2); $w0 = $r.R - $r.L
+  Click ($r.L + 6) $mid                       # the ‹ › toggle -> collapse
+  $r1 = Get-Rect (Embedded-Window); $w1 = $r1.R - $r1.L
+  Write-Host "[clicks] width expanded=$w0 after toggle=$w1 (right edge $($r.R) -> $($r1.R))"
+  if ($w1 -ge $w0) { throw "[clicks] clicking the toggle did not collapse the widget" }
+  if ($r1.R -ne $r.R) { throw "[clicks] right edge moved while collapsing" }
+  Show-Pixels "collapsed" (Embedded-Window)
+  Click ($r1.L + 6) $mid                      # toggle again -> expand
+  $w2 = (Get-Rect (Embedded-Window)).R - (Get-Rect (Embedded-Window)).L
+  if ($w2 -ne $w0) { throw "[clicks] clicking the toggle again did not expand the widget ($w2 vs $w0)" }
+
+  Click ($r.L + 27) $mid                      # the status dot -> details popup
+  $pops = [W]::VisibleTopLevelOf((NetWatch-Pids))
+  if ($pops.Count -lt 1) { throw "[clicks] clicking the dot did not open the details popup" }
+  $pr = Get-Rect $pops[0]
+  Write-Host "[clicks] popup: $($pr.L),$($pr.T) - $($pr.R),$($pr.B)"
+  if ($pr.B -gt $r.T) { throw "[clicks] popup should open above the taskbar" }
+  Click ([int](($pr.L + $pr.R) / 2)) ([int](($pr.T + $pr.B) / 2))   # click popup -> close
+  if ([W]::VisibleTopLevelOf((NetWatch-Pids)).Count -ne 0) { throw "[clicks] popup did not close" }
+  Write-Host "[clicks] toggle and popup OK"
+}
+
 function Assert-Embedded($label) {
   $bar = [W]::FindWindow("Shell_TrayWnd", $null)
   if ($bar -eq [IntPtr]::Zero) { throw "[$label] no Shell_TrayWnd on this machine" }
@@ -117,6 +174,7 @@ try {
 
   Assert-Embedded "start"
   Save-TaskbarShot "start"
+  Test-Clicks
 
   Write-Host "restarting explorer.exe ..."
   Stop-Process -Name explorer -Force
