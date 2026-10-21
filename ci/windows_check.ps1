@@ -67,8 +67,7 @@ function Save-TaskbarShot($name) {
 }
 
 # Prints the embedded window as characters so the result can be read from the log:
-#   ' ' = same colour as the taskbar next to it (i.e. transparent)
-#   '#' = NetWatch's own background colour (the colour key; should not appear)
+#   ' ' = same colour as the taskbar next to it (background blends in)
 #   'G' / 'Y' / 'R' = status dot,  '*' = text and other pixels
 function Show-Pixels($label, $win) {
   $bar = [W]::FindWindow("Shell_TrayWnd", $null)
@@ -81,16 +80,14 @@ function Show-Pixels($label, $win) {
   $x0 = $wr.L - $br.L; $x1 = $wr.R - $br.L; $y0 = $wr.T - $br.T; $y1 = $wr.B - $br.T
   $ref = $bmp.GetPixel([Math]::Max(0, $x0 - 6), [int](($y0 + $y1) / 2))
   $light = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -ErrorAction SilentlyContinue).SystemUsesLightTheme
-  $key = if ($light -eq 1) { [System.Drawing.Color]::FromArgb(0xee, 0xf1, 0xf5) } else { [System.Drawing.Color]::FromArgb(0x20, 0x20, 0x20) }
   Write-Host "[$label] light theme=$light taskbar sample=$($ref.R),$($ref.G),$($ref.B)"
   function Near($a, $b, $t) { [Math]::Abs($a.R - $b.R) + [Math]::Abs($a.G - $b.G) + [Math]::Abs($a.B - $b.B) -le $t }
-  $keyCount = 0
+  $bgCount = 0
   for ($y = $y0; $y -lt $y1; $y++) {
     $line = ""
     for ($x = [Math]::Max(0, $x0 - 4); $x -lt [Math]::Min($w, $x1 + 4); $x++) {
       $c = $bmp.GetPixel($x, $y)
-      if (Near $c $ref 24) { $line += " " }
-      elseif (Near $c $key 6) { $line += "#"; $keyCount++ }
+      if (Near $c $ref 24) { $line += " "; $bgCount++ }
       elseif ($c.G -gt 150 -and $c.R -lt 120 -and $c.B -lt 150) { $line += "G" }
       elseif ($c.R -gt 200 -and $c.G -gt 120 -and $c.B -lt 90) { $line += "Y" }
       elseif ($c.R -gt 200 -and $c.G -lt 110 -and $c.B -lt 110) { $line += "R" }
@@ -98,7 +95,8 @@ function Show-Pixels($label, $win) {
     }
     Write-Host "|$line|"
   }
-  Write-Host "[$label] colour-key pixels visible: $keyCount"
+  $total = ($y1 - $y0) * ([Math]::Min($w, $x1 + 4) - [Math]::Max(0, $x0 - 4))
+  Write-Host "[$label] pixels matching the taskbar colour: $bgCount of $total"
   $g.Dispose(); $bmp.Dispose()
 }
 

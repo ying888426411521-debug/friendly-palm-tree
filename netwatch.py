@@ -47,6 +47,13 @@ def pick_font(root, size, weight="normal"):
     return tkfont.Font(root=root, size=size, weight=weight)
 
 
+def shade(color, amount):
+    """浅色变暗一点、深色变亮一点（用于悬停高亮）。"""
+    r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    d = -amount if (r * 299 + g * 587 + b * 114) / 1000 > 128 else amount
+    return "#" + "".join(f"{min(255, max(0, v + d)):02x}" for v in (r, g, b))
+
+
 def full_place(ip):
     parts = []
     for p in (ip.country, ip.region, ip.city):
@@ -116,6 +123,7 @@ class Widget:
         self.popup = None
         self.ticks = 0
         self.embedded = False   # 是否已嵌入任务栏（成为任务栏的子窗口）
+        self.bar_bg = None      # 嵌入时取样得到的任务栏颜色
         self.taskbar = None
         self.quitting = False
         self.theme = self._pick_theme()
@@ -209,13 +217,14 @@ class Widget:
 
     def _apply_colors(self):
         t = self.theme
-        bg = t["hover"] if self.hover else t["bg"]
+        if self.embedded and self.bar_bg:
+            # 嵌入任务栏时用任务栏本身的颜色做背景，看起来就像直接画在任务栏上
+            bg = shade(self.bar_bg, 14) if self.hover else self.bar_bg
+        else:
+            bg = t["hover"] if self.hover else t["bg"]
         for w in (self.root, self.body, self.toggle_btn, self.dot, self.text,
                   self.place_label, self.status_label):
             w.configure(bg=bg)
-        if self.embedded:
-            # 背景色设为透明色：平时只有文字和圆点“画”在任务栏上，悬停时才出现高亮底色
-            self.root.attributes("-transparentcolor", t["bg"])
         self.toggle_btn.configure(fg=t["dim"])
         self.place_label.configure(fg=t["fg"])
         level = self._level()
@@ -354,6 +363,22 @@ class Widget:
         self.hwnd, self.taskbar, self.embedded = hwnd, bar, True
         self.root.attributes("-alpha", 1.0)
         self._render()
+        self.bar_bg = self._sample_taskbar_color()
+        self._apply_colors()
+
+    def _sample_taskbar_color(self):
+        """取小部件上下方任务栏的颜色（各通道取中位数，避开亚克力效果的细微噪点）。
+
+        不用“透明色”实现透明：那样透明的像素点击会穿透到任务栏，点文字空隙就点不到小部件。
+        """
+        x, y, w, h = self.geom
+        xs = range(x, x + w, max(1, w // 12))
+        points = [(px, self.bar[1] + 2) for px in xs] + [(px, self.bar[3] - 2) for px in xs]
+        colors = desktop.screen_colors(points)
+        if not colors:
+            return None
+        r, g, b = (sorted(c[i] for c in colors)[len(colors) // 2] for i in range(3))
+        return f"#{r:02x}{g:02x}{b:02x}"
 
     def _in_taskbar(self):
         return bool(self.bar and self.bar[1] <= self.cy <= self.bar[3])
@@ -495,6 +520,10 @@ class Widget:
                 self._render()
             if self.embedded:
                 desktop.bring_to_top(self.hwnd)
+                bar_bg = self._sample_taskbar_color()  # 换壁纸/深浅色后任务栏颜色会变
+                if bar_bg and bar_bg != self.bar_bg:
+                    self.bar_bg = bar_bg
+                    self._apply_colors()
 
         if not self.embedded:
             # 浮动模式：全屏看视频/玩游戏时隐藏，其余时间保持在任务栏之上。

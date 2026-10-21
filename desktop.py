@@ -30,6 +30,11 @@ if IS_WINDOWS:
     _sig(user32.SetWindowPos, wintypes.BOOL, wintypes.HWND, wintypes.HWND,
          ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT)
 
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    _sig(user32.GetDC, wintypes.HDC, wintypes.HWND)
+    _sig(user32.ReleaseDC, ctypes.c_int, wintypes.HWND, wintypes.HDC)
+    _sig(gdi32.GetPixel, wintypes.DWORD, wintypes.HDC, ctypes.c_int, ctypes.c_int)
+
 GWL_STYLE = -16
 WS_CHILD = 0x40000000
 WS_POPUP = 0x80000000
@@ -128,6 +133,22 @@ def bring_to_top(hwnd):
     """嵌入后保持在任务栏其它内容（如 Windows 11 的任务栏按钮层）之上。"""
     if IS_WINDOWS and hwnd:
         user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+
+
+def screen_colors(points):
+    """读取屏幕上若干点的颜色 [(r, g, b), ...]，读不到的点跳过。"""
+    if not IS_WINDOWS:
+        return []
+    colors = []
+    hdc = user32.GetDC(None)
+    try:
+        for x, y in points:
+            c = gdi32.GetPixel(hdc, x, y)
+            if c != 0xFFFFFFFF:  # CLR_INVALID
+                colors.append((c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF))
+    finally:
+        user32.ReleaseDC(None, hdc)
+    return colors
 
 
 def is_window(hwnd):
