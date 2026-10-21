@@ -1,6 +1,6 @@
 # NetWatch · 网络/VPN 状态小窗
 
-一个**停靠在任务栏托盘图标左边**的小部件，实时显示：
+一个**嵌在 Windows 任务栏里、托盘图标左边**的小部件，实时显示：
 
 - 当前出口 IP 的**地点**（国家 · 城市）
 - 网络/VPN 是否正常：常用网站能不能打开、延迟多少
@@ -11,7 +11,7 @@
 - **展开**：像任务栏时钟一样的两行小字 —— 第一行地点，第二行状态
 - **折叠**：只剩一个小圆点，🟢 正常 / 🟡 有问题 / 🔴 断开
 
-配色自动跟随 Windows 的深色 / 浅色模式；全屏看视频、玩游戏时会自动隐藏。
+它是任务栏的一部分（和 TrafficMonitor 的做法一样）：点任务栏不会被盖住或闪动，全屏看视频、玩游戏时随任务栏一起隐藏。配色自动跟随 Windows 的深色 / 浅色模式。
 
 ![预览](docs/preview.png)
 
@@ -51,9 +51,11 @@
 | 单击圆点或文字 | 弹出详情（IP、ISP、每个网站的延迟、更新时间），再点一次关闭 |
 | 左键拖动 | 移动位置，自动记住；拖到任务栏上会自动上下居中对齐 |
 | 鼠标悬停 | 高亮并变为不透明 |
-| 右键 | 菜单：立即刷新 / 显示详情 / 折叠展开 / 停靠到任务栏 / 开机自启动 / 修改配置 / 退出 |
+| 右键 | 菜单：立即刷新 / 显示详情 / 折叠展开 / 停靠到任务栏 / 嵌入任务栏 / 开机自启动 / 修改配置 / 退出 |
 
-> 第一次运行会自动放到托盘图标左边。如果位置不理想，直接拖到想要的地方即可；右键「停靠到任务栏」可恢复默认位置。
+> 第一次运行会自动放到托盘图标左边。位置不理想就直接左右拖动，会记住；右键「停靠到任务栏」可恢复默认位置。
+>
+> 右键取消勾选「嵌入任务栏」会变回浮动的置顶小窗，可以拖到屏幕任意位置（但点任务栏时会被短暂盖住）。资源管理器重启后会自动重新嵌入。
 
 ### 开机自启动
 
@@ -72,17 +74,23 @@ pip install pyinstaller
 build_exe.bat
 ```
 
-生成的 `dist\NetWatch.exe` 可以单独拷贝使用，配置文件会放在 exe 旁边。
+生成的 `dist\NetWatch.exe` 可以单独拷贝使用。
 
 ## 配置
 
-第一次运行会在程序旁边生成 `config.json`（右键 → 修改配置 可直接打开），改完后重启小窗生效：
+配置保存在用户目录里，**不会在 exe 旁边（比如桌面上）产生文件**：
+
+- Windows：`%APPDATA%\NetWatch\config.json`
+- macOS：`~/Library/Application Support/NetWatch/config.json`
+- Linux：`~/.config/NetWatch/config.json`
+
+旧版本放在 exe 旁边的 `config.json` 会在启动时自动搬过去。右键 → 修改配置 可直接打开，改完后重启小部件生效：
 
 ```jsonc
 {
   "interval_seconds": 30,        // 检测间隔（秒）
   "timeout_seconds": 6,          // 单次请求超时（秒）
-  "opacity": 0.78,               // 不透明度 0.2 ~ 1.0
+  "opacity": 0.78,               // 浮动模式下的不透明度 0.2 ~ 1.0（嵌入任务栏时背景自动透明）
   "slow_ms": 1500,               // 超过这个延迟算“慢”
   "warn_countries": ["CN"],      // 出口 IP 在这些国家且外网不通时，判定为“VPN 未生效”
   "targets": [                   // 需要通过 VPN 访问的网站，可自行增删
@@ -94,6 +102,7 @@ build_exe.bat
   "domestic_target": {"name": "百度", "url": "https://www.baidu.com"},  // 用于判断是不是整个网络断了
   "theme": "auto",               // 配色：auto 跟随系统 / dark / light
   "collapsed": false,            // 是否折叠成小圆点
+  "embed_taskbar": true,         // 嵌入任务栏（Windows）；false = 浮动置顶小窗
   "anchor": null                 // 位置，拖动后自动保存；null = 停靠在托盘左边
 }
 ```
@@ -114,4 +123,5 @@ python3 -m unittest discover -s tests   # 运行测试（检测逻辑，不需�
 - `monitor.py`：检测逻辑（IP 查询、网站检测、状态判断），不依赖界面
 - `netwatch.py`：tkinter 小窗界面
 - `autostart.py`：开机自启动（注册表 / LaunchAgent / autostart）
-- `desktop.py`：任务栏/托盘位置、系统深浅色、全屏检测（Windows）
+- `desktop.py`：任务栏/托盘位置、嵌入任务栏、系统深浅色、全屏检测（Windows）
+- `ci/windows_check.ps1`：在 Windows 构建机上检查 exe 能运行、确实嵌入了任务栏、资源管理器重启后能恢复

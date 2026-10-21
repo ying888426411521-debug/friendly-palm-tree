@@ -3,7 +3,7 @@
 #  - stores config.json under %APPDATA%\NetWatch (not next to the exe),
 #  - embeds itself into the taskbar (child window of Shell_TrayWnd),
 #  - re-embeds after explorer.exe is restarted.
-# Taskbar screenshots are saved to ci-shots\ and printed as base64 for inspection.
+# Taskbar screenshots are saved to ci-shots\ and the widget's pixels are printed to the log.
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
@@ -48,11 +48,45 @@ function Save-TaskbarShot($name) {
     $g.CopyFromScreen($r.R - $w, $r.T, 0, 0, $bmp.Size)
     $path = "ci-shots\$name.png"
     $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-    Write-Host "SHOT-BEGIN $name"
-    Write-Host ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path)))
-    Write-Host "SHOT-END $name"
+    Write-Host "saved $path"
   } catch { Write-Host "screenshot failed: $_" }
   finally { $g.Dispose(); $bmp.Dispose() }
+}
+
+# Prints the embedded window as characters so the result can be read from the log:
+#   ' ' = same colour as the taskbar next to it (i.e. transparent)
+#   '#' = NetWatch's own background colour (the colour key; should not appear)
+#   'G' / 'Y' / 'R' = status dot,  '*' = text and other pixels
+function Show-Pixels($label, $win) {
+  $bar = [W]::FindWindow("Shell_TrayWnd", $null)
+  $br = Get-Rect $bar
+  $w = $br.R - $br.L; $h = $br.B - $br.T
+  $bmp = New-Object System.Drawing.Bitmap $w, $h
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  try { $g.CopyFromScreen($br.L, $br.T, 0, 0, $bmp.Size) } catch { Write-Host "capture failed: $_"; return }
+  $wr = Get-Rect $win
+  $x0 = $wr.L - $br.L; $x1 = $wr.R - $br.L; $y0 = $wr.T - $br.T; $y1 = $wr.B - $br.T
+  $ref = $bmp.GetPixel([Math]::Max(0, $x0 - 6), [int](($y0 + $y1) / 2))
+  $light = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -ErrorAction SilentlyContinue).SystemUsesLightTheme
+  $key = if ($light -eq 1) { [System.Drawing.Color]::FromArgb(0xee, 0xf1, 0xf5) } else { [System.Drawing.Color]::FromArgb(0x20, 0x20, 0x20) }
+  Write-Host "[$label] light theme=$light taskbar sample=$($ref.R),$($ref.G),$($ref.B)"
+  function Near($a, $b, $t) { [Math]::Abs($a.R - $b.R) + [Math]::Abs($a.G - $b.G) + [Math]::Abs($a.B - $b.B) -le $t }
+  $keyCount = 0
+  for ($y = $y0; $y -lt $y1; $y++) {
+    $line = ""
+    for ($x = [Math]::Max(0, $x0 - 4); $x -lt [Math]::Min($w, $x1 + 4); $x++) {
+      $c = $bmp.GetPixel($x, $y)
+      if (Near $c $ref 24) { $line += " " }
+      elseif (Near $c $key 6) { $line += "#"; $keyCount++ }
+      elseif ($c.G -gt 150 -and $c.R -lt 120 -and $c.B -lt 150) { $line += "G" }
+      elseif ($c.R -gt 200 -and $c.G -gt 120 -and $c.B -lt 90) { $line += "Y" }
+      elseif ($c.R -gt 200 -and $c.G -lt 110 -and $c.B -lt 110) { $line += "R" }
+      else { $line += "*" }
+    }
+    Write-Host "|$line|"
+  }
+  Write-Host "[$label] colour-key pixels visible: $keyCount"
+  $g.Dispose(); $bmp.Dispose()
 }
 
 function Assert-Embedded($label) {
@@ -67,6 +101,7 @@ function Assert-Embedded($label) {
     $r = Get-Rect $k
     Write-Host "[$label] embedded window: $($r.L),$($r.T) - $($r.R),$($r.B) visible=$([W]::IsWindowVisible($k))"
     if ($r.T -lt $br.T -or $r.B -gt $br.B) { throw "[$label] embedded window is outside the taskbar" }
+    Show-Pixels $label $k
   }
 }
 
