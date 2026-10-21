@@ -178,19 +178,15 @@ class Widget:
         self.menu.add_command(label="修改配置…", command=self.open_config)
         self.menu.add_command(label="退出", command=self.quit)
 
-        self._bind_mouse(self.root)
+        # 只绑定在窗口本身：Tk 会把子控件上的事件也交给所在窗口处理，
+        # 如果子控件再各绑一次，一次点击会被处理两次（展开又收起，等于没点）
+        self.root.bind("<ButtonPress-1>", self._on_press)
+        self.root.bind("<B1-Motion>", self._on_drag)
+        self.root.bind("<ButtonRelease-1>", self._on_release)
+        self.root.bind("<Button-3>", self._show_menu)
+        self.root.bind("<Button-2>", self._show_menu)  # macOS 触控板右键
         self.root.bind("<Enter>", self._on_enter)
         self.root.bind("<Leave>", self._on_leave)
-
-    def _bind_mouse(self, w):
-        w.bind("<ButtonPress-1>", self._on_press)
-        w.bind("<B1-Motion>", self._on_drag)
-        w.bind("<ButtonRelease-1>", self._on_release)
-        w.bind("<Button-3>", self._show_menu)
-        w.bind("<Button-2>", self._show_menu)  # macOS 触控板右键
-        for child in w.winfo_children():
-            if not isinstance(child, (tk.Menu, tk.Toplevel)):
-                self._bind_mouse(child)
 
     def _on_enter(self, e):
         self.hover = True
@@ -269,6 +265,8 @@ class Widget:
         self.popup.attributes("-alpha", max(self.opacity, 0.95))
         self.popup_body = tk.Frame(self.popup, padx=self.px(14), pady=self.px(10))
         self.popup_body.pack(fill="both", expand=True)
+        self.popup.bind("<ButtonRelease-1>", lambda e: self.toggle_popup())  # 点弹窗任意处关闭
+        self.popup.bind("<Button-3>", self._show_menu)
         self._fill_popup()
 
     def _fill_popup(self):
@@ -316,14 +314,7 @@ class Widget:
             updated = time.strftime("%H:%M:%S", time.localtime(snap.checked_at))
             cell(f"更新于 {updated}" + (f" · {ip.source}" if ip else ""), row, 0,
                  colspan=3, pady=(self.px(6), 0))
-        self._bind_popup(self.popup)
         self._place_popup()
-
-    def _bind_popup(self, w):
-        w.bind("<ButtonRelease-1>", lambda e: self.toggle_popup())
-        w.bind("<Button-3>", self._show_menu)
-        for child in w.winfo_children():
-            self._bind_popup(child)
 
     def _place_popup(self):
         self.popup.update_idletasks()
