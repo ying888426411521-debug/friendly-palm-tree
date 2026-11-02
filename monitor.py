@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -112,11 +113,29 @@ def save_config(config: dict, path: Optional[str] = None) -> None:
 
 # ---------------------------------------------------------------- 网络请求
 
+def _ssl_context() -> ssl.SSLContext:
+    """系统证书 + certifi（Mozilla）证书一起用来验证网站证书。
+
+    Windows 上 Python 只能读到“本机已缓存”的根证书，不会像浏览器那样按需下载，
+    所以有些网站（如 GitHub）会被误报证书验证失败；补上 certifi 就不会了。
+    """
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(certifi.where())
+    except Exception:
+        pass
+    return ctx
+
+
+SSL_CONTEXT = _ssl_context()
+
+
 def http_get(url: str, timeout: float) -> bytes:
     # urllib 默认会读取系统代理设置（Windows 注册表 / macOS 系统设置 / 环境变量），
     # 所以“系统代理”模式的 VPN 客户端（如 Clash）也能被正确检测。
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=SSL_CONTEXT) as resp:
         return resp.read(256 * 1024)
 
 
@@ -126,34 +145,41 @@ class SiteResult:
     ok: bool
     latency_ms: Optional[int] = None
     error: str = ""
+    detail: str = ""  # 原始错误信息，详情里显示，方便排查
 
 
 def check_site(name: str, url: str, timeout: float) -> SiteResult:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     start = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=timeout):
+        with urllib.request.urlopen(req, timeout=timeout, context=SSL_CONTEXT):
             pass
     except urllib.error.HTTPError:
         # 收到了 HTTP 响应（哪怕是 403/404），说明网络是通的
         pass
     except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as e:
-        return SiteResult(name, False, error=describe_error(e))
+        reason = getattr(e, "reason", e)
+        return SiteResult(name, False, error=describe_error(e), detail=str(reason)[:160])
     return SiteResult(name, True, int((time.perf_counter() - start) * 1000))
 
 
 def describe_error(e: Exception) -> str:
+    # 先按异常类型判断：中文版 Windows 的错误信息是中文的，只靠英文关键字会漏掉
     reason = getattr(e, "reason", e)
     text = str(reason).lower()
     if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in text:
         return "超时"
     if isinstance(reason, socket.gaierror) or "getaddrinfo" in text or "name or service" in text:
         return "DNS 失败"
-    if "refused" in text:
+    if isinstance(reason, ssl.SSLCertVerificationError) or "certificate verify failed" in text:
+        return "证书验证失败"
+    if isinstance(reason, (ssl.SSLEOFError, ssl.SSLZeroReturnError)) or "eof" in text:
+        return "加密连接被中断"
+    if isinstance(reason, ConnectionRefusedError) or "refused" in text:
         return "连接被拒"
-    if "reset" in text:
-        return "连接重置"
-    if "ssl" in text or "certificate" in text:
+    if isinstance(reason, (ConnectionResetError, ConnectionAbortedError)) or "reset" in text:
+        return "连接被重置"
+    if isinstance(reason, ssl.SSLError) or "ssl" in text:
         return "SSL 错误"
     return "无法连接"
 

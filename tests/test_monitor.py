@@ -1,8 +1,11 @@
 import json
 import os
+import socket
+import ssl
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,6 +59,22 @@ class EvaluateTest(unittest.TestCase):
     def test_offline(self):
         snap = evaluate(None, [fail("A")], fail("百度"), CONFIG)
         self.assertEqual((snap.level, snap.summary), (monitor.OFFLINE, "网络断开"))
+
+
+class DescribeErrorTest(unittest.TestCase):
+    def check(self, reason, expected):
+        self.assertEqual(monitor.describe_error(urllib.error.URLError(reason)), expected)
+
+    def test_error_kinds(self):
+        self.check(socket.timeout("timed out"), "超时")
+        self.check(ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate "
+                                                   "verify failed: unable to get local issuer "
+                                                   "certificate"), "证书验证失败")
+        self.check(ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in "
+                                      "violation of protocol"), "加密连接被中断")
+        # 中文版 Windows 的错误信息是中文的，要靠异常类型识别
+        self.check(ConnectionResetError(10054, "远程主机强迫关闭了一个现有的连接。"), "连接被重置")
+        self.check(ConnectionRefusedError(10061, "由于目标计算机积极拒绝，无法连接。"), "连接被拒")
 
 
 class LookupIpTest(unittest.TestCase):

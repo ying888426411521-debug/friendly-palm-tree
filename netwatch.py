@@ -307,6 +307,12 @@ class Widget:
                 cell(f"{s.latency_ms}ms" if s.ok else s.error, row, 2,
                      t["fg"] if s.ok else color, pady=top)
                 row += 1
+                if not s.ok and s.detail:  # 原始错误信息，方便判断原因
+                    tk.Label(self.popup_body, text=s.detail, font=self.font_small, fg=t["dim"],
+                             bg=t["bg"], anchor="w", justify="left",
+                             wraplength=self.px(260)).grid(row=row, column=1, columnspan=2,
+                                                           sticky="w")
+                    row += 1
 
             if self.change_note:
                 cell(self.change_note, row, 0, COLORS[monitor.WARN], 3, pady=(self.px(6), 0))
