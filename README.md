@@ -51,11 +51,23 @@
 | 单击圆点或文字 | 弹出详情（IP、ISP、每个网站的延迟、更新时间），再点一次关闭 |
 | 左键拖动 | 移动位置，自动记住；拖到任务栏上会自动上下居中对齐 |
 | 鼠标悬停 | 高亮并变为不透明 |
-| 右键 | 菜单：立即刷新 / 显示详情 / 折叠展开 / 停靠到任务栏 / 嵌入任务栏 / 开机自启动 / 修改配置 / 退出 |
+| 右键 | 菜单：立即刷新 / 显示详情 / 折叠展开 / 停靠到任务栏 / 嵌入任务栏 / VPN 断开时结束 Claude / 开机自启动 / 修改配置 / 退出 |
 
 > 第一次运行会自动放到托盘图标左边。位置不理想就直接左右拖动，会记住；右键「停靠到任务栏」可恢复默认位置。
 >
 > 右键取消勾选「嵌入任务栏」会变回浮动的置顶小窗，可以拖到屏幕任意位置（但点任务栏时会被短暂盖住）。资源管理器重启后会自动重新嵌入。
+
+### VPN 断开时自动结束 Claude
+
+检测到 VPN 断开时，会自动结束 **Claude 桌面版**（`Claude.exe`）和 **Claude Code**（`claude.exe`，或用 npm 安装、由 node 运行的版本），其它程序不受影响。
+
+- **什么算“断开”**：圆点变红 —— 外网网站全部打不开（`VPN 可能断开` / `VPN 未生效`），或整个网络断开。黄色（个别网站不通、网速慢）不算。
+- **防止误判**：第一次检测到红色后，10 秒后立刻复查，**连续两次**都是红色才动手。
+- **断开期间**：如果又打开了 Claude，下一次检测（约 10 秒内）会再次结束。
+- **结束后**：小部件闪烁，并自动弹出详情，写明「几点几分、什么原因、结束了哪些程序」。
+- **开关**：右键 → 「VPN 断开时结束 Claude」，默认开启。
+
+要结束的程序可以在配置里修改：`kill_process_names`（按进程名）和 `kill_cmdline_patterns`（按命令行片段），连续几次判定为断开才动手是 `kill_after_checks`。
 
 ### 开机自启动
 
@@ -100,6 +112,10 @@ build_exe.bat
     {"name": "ChatGPT", "url": "https://chatgpt.com"}
   ],
   "domestic_target": {"name": "百度", "url": "https://www.baidu.com"},  // 用于判断是不是整个网络断了
+  "kill_on_vpn_down": true,      // VPN 断开时结束下面的程序
+  "kill_after_checks": 2,        // 连续几次判定为断开才动手（第二次在 10 秒后复查）
+  "kill_process_names": ["claude"],                      // 按进程名匹配（不分大小写，可省略 .exe）
+  "kill_cmdline_patterns": ["@anthropic-ai/claude-code"], // 按命令行片段匹配（npm 版 Claude Code）
   "theme": "auto",               // 配色：auto 跟随系统 / dark / light
   "collapsed": false,            // 是否折叠成小圆点
   "embed_taskbar": true,         // 嵌入任务栏（Windows）；false = 浮动置顶小窗
@@ -138,5 +154,6 @@ python3 -m unittest discover -s tests   # 运行测试（检测逻辑，不需�
 - `monitor.py`：检测逻辑（IP 查询、网站检测、状态判断），不依赖界面
 - `netwatch.py`：tkinter 小窗界面
 - `autostart.py`：开机自启动（注册表 / LaunchAgent / autostart）
+- `guard.py`：VPN 断开时结束指定程序
 - `desktop.py`：任务栏/托盘位置、嵌入任务栏、系统深浅色、全屏检测（Windows）
 - `ci/windows_check.ps1`：在 Windows 构建机上检查 exe 能运行、确实嵌入了任务栏、资源管理器重启后能恢复

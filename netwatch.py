@@ -23,6 +23,7 @@ from tkinter import messagebox
 
 import autostart
 import desktop
+import guard
 import monitor
 
 COLORS = {
@@ -71,17 +72,22 @@ class Checker(threading.Thread):
         self.results = results
         self.wake = threading.Event()
         self.stopped = False
+        self.guard = guard.Guard(config)
 
     def run(self):
         while not self.stopped:
             try:
                 snap = monitor.run_check(self.config)
+                snap.action = self.guard.on_snapshot(snap)  # 在后台线程里结束程序，界面不卡
             except Exception as e:  # 不能让检测线程挂掉
                 snap = monitor.Snapshot(monitor.OFFLINE, f"检测出错: {e}")
             if self.stopped:
                 break
             self.results.put(snap)
-            self.wake.wait(max(5, float(self.config.get("interval_seconds", 30))))
+            wait = max(5, float(self.config.get("interval_seconds", 30)))
+            if snap.level in guard.DOWN_LEVELS:
+                wait = min(wait, 10)  # 疑似断开：10 秒后复查确认，不等满一个周期
+            self.wake.wait(wait)
             self.wake.clear()
 
     def refresh_now(self):
@@ -117,6 +123,7 @@ class Widget:
         self.snapshot = None
         self.last_ip = None
         self.change_note = ""
+        self.kill_note = ""
         self.flash_until = 0.0
         self.hover = False
         self.hidden = False
@@ -171,6 +178,9 @@ class Widget:
             self.embed_var = tk.BooleanVar(value=bool(self.config.get("embed_taskbar", True)))
             self.menu.add_checkbutton(label="嵌入任务栏", variable=self.embed_var,
                                       command=self.toggle_embed)
+        self.kill_var = tk.BooleanVar(value=bool(self.config.get("kill_on_vpn_down", True)))
+        self.menu.add_checkbutton(label="VPN 断开时结束 Claude", variable=self.kill_var,
+                                  command=self.toggle_kill)
         self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
         self.menu.add_checkbutton(label="开机自启动", variable=self.autostart_var,
                                   command=self.toggle_autostart)
@@ -317,6 +327,12 @@ class Widget:
             if self.change_note:
                 cell(self.change_note, row, 0, COLORS[monitor.WARN], 3, pady=(self.px(6), 0))
                 row += 1
+            if self.kill_note:
+                tk.Label(self.popup_body, text=self.kill_note, font=self.font_small,
+                         fg=COLORS[monitor.BAD], bg=t["bg"], anchor="w", justify="left",
+                         wraplength=self.px(260)).grid(row=row, column=0, columnspan=3,
+                                                       sticky="w", pady=(self.px(6), 0))
+                row += 1
             updated = time.strftime("%H:%M:%S", time.localtime(snap.checked_at))
             cell(f"更新于 {updated}" + (f" · {ip.source}" if ip else ""), row, 0,
                  colspan=3, pady=(self.px(6), 0))
@@ -455,6 +471,10 @@ class Widget:
         monitor.save_config(self.config)
         self._render()
 
+    def toggle_kill(self):
+        self.config["kill_on_vpn_down"] = self.kill_var.get()
+        monitor.save_config(self.config)
+
     def toggle_embed(self):
         self.config["embed_taskbar"] = self.embed_var.get()
         monitor.save_config(self.config)
@@ -550,6 +570,12 @@ class Widget:
         if ip:
             self.last_ip = ip
         self.snapshot = snap
+        if snap.action:
+            # 结束了 Claude：闪烁提醒并自动弹出详情说明原因
+            self.kill_note = snap.action
+            self.flash_until = time.time() + 6
+            if not self.popup and not self.hidden:
+                self.root.after(0, self.toggle_popup)
         self._render()
 
     def run(self):

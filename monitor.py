@@ -40,6 +40,13 @@ DEFAULT_CONFIG = {
     ],
     # 国内网站，用来区分“VPN 坏了”和“整个网络断了”。不需要可设为 null
     "domestic_target": {"name": "百度", "url": "https://www.baidu.com"},
+    # VPN 断开（连续 kill_after_checks 次检测为红色）时自动结束下面这些程序
+    "kill_on_vpn_down": True,
+    "kill_after_checks": 2,
+    # 按进程名匹配（不分大小写，可省略 .exe）：Claude 桌面版、Claude Code
+    "kill_process_names": ["claude"],
+    # 按命令行片段匹配：用 npm 安装、由 node 运行的 Claude Code
+    "kill_cmdline_patterns": ["@anthropic-ai/claude-code"],
     # 配色："auto" 跟随 Windows 深浅色，也可以写 "dark" / "light"
     "theme": "auto",
     # 是否嵌入任务栏（Windows）。嵌入后点任务栏不会闪；关掉则是浮在任务栏上的置顶小窗
@@ -269,6 +276,7 @@ class Snapshot:
     sites: List[SiteResult] = field(default_factory=list)
     domestic: Optional[SiteResult] = None
     checked_at: float = field(default_factory=time.time)
+    action: str = ""  # 本次检测后做了什么（如“已结束 Claude.exe”）
 
 
 def evaluate(ip: Optional[IpInfo], sites: List[SiteResult],
